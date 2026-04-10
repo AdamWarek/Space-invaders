@@ -17,7 +17,7 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: flex-start;
+      justify-content: flex-end;
       overflow: hidden;
       touch-action: none;       /* prevent scroll/zoom while playing */
       user-select: none;
@@ -30,6 +30,7 @@
       flex-shrink: 0;
       /* subtle outer glow to sell the CRT vibe */
       box-shadow: 0 0 40px rgba(0, 255, 80, 0.12);
+      margin-bottom: 30px;
     }
 
     /* ── Canvas: pixel-perfect scaling ─────────────────────────── */
@@ -65,58 +66,7 @@
       z-index: 11;
     }
 
-    /* ── Touch control bar ──────────────────────────────────────── */
-    #touch-controls {
-      display: none;             /* hidden by default; shown on touch devices */
-      width: 100%;
-      flex-shrink: 0;
-      background: #000;
-      padding: 10px 14px;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      border-top: 1px solid #001a00;
-    }
 
-    /* Reveal touch controls only on genuine touch/mobile devices */
-    @media (hover: none) and (pointer: coarse) {
-      #touch-controls { display: flex; }
-    }
-
-    .touch-btn {
-      flex: 1;
-      height: 72px;
-      border: 2px solid #00cc44;
-      background: rgba(0, 204, 68, 0.06);
-      color: #00cc44;
-      font-family: 'Courier New', monospace;
-      font-size: 26px;
-      font-weight: bold;
-      border-radius: 10px;
-      cursor: pointer;
-      touch-action: none;
-      letter-spacing: 2px;
-      transition: background 0.08s, box-shadow 0.08s;
-    }
-    .touch-btn:active,
-    .touch-btn.pressed {
-      background: rgba(0, 204, 68, 0.22);
-      box-shadow: 0 0 12px rgba(0, 204, 68, 0.35);
-    }
-
-    #btn-fire {
-      flex: 1.4;
-      color: #ff4444;
-      border-color: #ff4444;
-      background: rgba(255, 68, 68, 0.06);
-      font-size: 13px;
-      letter-spacing: 4px;
-    }
-    #btn-fire:active,
-    #btn-fire.pressed {
-      background: rgba(255, 68, 68, 0.22);
-      box-shadow: 0 0 12px rgba(255, 68, 68, 0.35);
-    }
   </style>
 </head>
 <body>
@@ -128,12 +78,7 @@
   <div id="vignette"></div>
 </div>
 
-<!-- Mobile on-screen controls (only visible on touch devices) -->
-<div id="touch-controls" aria-label="Game controls">
-  <button class="touch-btn" id="btn-left"  aria-label="Move left">◀◀</button>
-  <button class="touch-btn" id="btn-fire"  aria-label="Fire">FIRE</button>
-  <button class="touch-btn" id="btn-right" aria-label="Move right">▶▶</button>
-</div>
+
 
 <script>
 'use strict';
@@ -157,7 +102,7 @@ const ALIEN_SPRITE_H   = 16;   // visual sprite height (8 bits × SP=2)
 
 // Player config
 const PLAYER_SPEED       = 230;   // px / second
-const PLAYER_BULLET_COOL = 0.42;  // seconds between shots
+const PLAYER_BULLET_COOL = 0.21;  // seconds between shots
 const BULLET_SPEED_P     = 440;   // player bullet speed (px/s, upward)
 const BULLET_SPEED_A     = 175;   // alien  bullet speed (px/s, downward)
 const UFO_SPEED          = 115;   // px/s
@@ -337,55 +282,50 @@ const pad = (n, w) => String(n).padStart(w, '0');
 
 const Input = {
   keys:  {},
-  touch: { left: false, right: false, fire: false },
+  dragDeltaX: 0,
+  _isDragging: false,
+  _lastX: 0,
 
-  init() {
+  init(canvas) {
     // ── Keyboard ──────────────────────────────────────────────────
     document.addEventListener('keydown', e => {
       this.keys[e.code] = true;
-      // Suppress browser scroll for game keys
       if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) {
         e.preventDefault();
       }
     });
     document.addEventListener('keyup', e => { this.keys[e.code] = false; });
 
-    // ── Touch buttons ─────────────────────────────────────────────
-    const bindBtn = (id, prop) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-
-      const press = e => {
-        e.preventDefault();
-        this.touch[prop] = true;
-        el.classList.add('pressed');
-      };
-      const release = e => {
-        e.preventDefault();
-        this.touch[prop] = false;
-        el.classList.remove('pressed');
-      };
-
-      // Touch events
-      el.addEventListener('touchstart',  press,   { passive: false });
-      el.addEventListener('touchend',    release, { passive: false });
-      el.addEventListener('touchcancel', release, { passive: false });
-
-      // Mouse fallback (desktop testing with on-screen buttons)
-      el.addEventListener('mousedown',  press);
-      el.addEventListener('mouseup',    release);
-      el.addEventListener('mouseleave', release);
-    };
-
-    bindBtn('btn-left',  'left');
-    bindBtn('btn-right', 'right');
-    bindBtn('btn-fire',  'fire');
+    // ── Pointer (Swipe/Drag) ──────────────────────────────────────
+    window.addEventListener('pointerdown', e => {
+      if (this._isDragging) return;
+      this._isDragging = true;
+      this._pointerId = e.pointerId;
+      this._lastX = e.clientX;
+    });
+    window.addEventListener('pointermove', e => {
+      if (this._isDragging && e.pointerId === this._pointerId) {
+        const scale = canvas.clientWidth / W;
+        const sensitivity = 1.8; // Boost swipe responsiveness
+        this.dragDeltaX += ((e.clientX - this._lastX) / scale) * sensitivity;
+        this._lastX = e.clientX;
+      }
+    });
+    window.addEventListener('pointerup', e => {
+      if (e.pointerId === this._pointerId) this._isDragging = false;
+    });
+    window.addEventListener('pointercancel', e => {
+      if (e.pointerId === this._pointerId) this._isDragging = false;
+    });
   },
 
-  isLeft()  { return !!(this.keys['ArrowLeft']  || this.keys['KeyA'] || this.touch.left);  },
-  isRight() { return !!(this.keys['ArrowRight'] || this.keys['KeyD'] || this.touch.right); },
-  isFire()  { return !!(this.keys['Space'] || this.keys['KeyZ'] || this.keys['KeyX']
-                        || this.keys['Enter'] || this.touch.fire);                          },
+  isLeft()  { return !!(this.keys['ArrowLeft']  || this.keys['KeyA']); },
+  isRight() { return !!(this.keys['ArrowRight'] || this.keys['KeyD']); },
+  consumeDeltaX() {
+    const dx = this.dragDeltaX;
+    this.dragDeltaX = 0;
+    return dx;
+  }
 };
 
 // ================================================================
@@ -465,8 +405,12 @@ class Player {
 
     if (this.invincible > 0) this.invincible -= dt;
 
-    if (Input.isLeft())  this.x = Math.max(8,          this.x - PLAYER_SPEED * dt);
-    if (Input.isRight()) this.x = Math.min(W - this.sw - 8, this.x + PLAYER_SPEED * dt);
+    let dx = 0;
+    if (Input.isLeft())  dx -= PLAYER_SPEED * dt;
+    if (Input.isRight()) dx += PLAYER_SPEED * dt;
+    dx += Input.consumeDeltaX();
+
+    this.x = Math.max(8, Math.min(W - this.sw - 8, this.x + dx));
 
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
   }
@@ -566,7 +510,8 @@ class AlienGrid {
    */
   get speed() {
     const ratio = this.count / (ALIEN_ROWS * ALIEN_COLS); // 1.0 → 0.0
-    return 28 * (1 + (1 - ratio) * 4.5) * (1 + (this.level - 1) * 0.25);
+    // Reduced max speed multiplier from 4.5 to 2.0 so they don't zip too fast at the end
+    return 28 * (1 + (1 - ratio) * 2.0) * (1 + (this.level - 1) * 0.25);
   }
 
   _nextFireDelay() {
@@ -600,7 +545,7 @@ class AlienGrid {
 
     // ── Movement ─────────────────────────────────────────────────
     if (this.pendingDrop) {
-      this.aliens.forEach(a => { if (a.alive) a.y += 18; });
+      this.aliens.forEach(a => { if (a.alive) a.y += 4; });
       this.stepDir *= -1;
       this.pendingDrop = false;
       return; // skip horizontal movement this tick to avoid double-step
@@ -973,11 +918,9 @@ class Game {
 
     if (this.state !== 'playing') return;
 
-    // ── Player input → fire ────────────────────────────────────
-    if (Input.isFire()) {
-      const b = this.player.tryShoot();
-      if (b) this.pBullets.push(b);
-    }
+    // ── Auto fire ──────────────────────────────────────────────
+    const b = this.player.tryShoot();
+    if (b) this.pBullets.push(b);
 
     // ── Entity updates ─────────────────────────────────────────
     this.player.update(dt);
@@ -1189,11 +1132,11 @@ class Game {
     // Blinking prompt
     if (Math.floor(Date.now() / 520) % 2 === 0) {
       drawText(ctx,
-        this.isMobile ? 'TAP  FIRE  BUTTON  TO  START' : 'PRESS  SPACE  TO  START',
+        this.isMobile ? 'TAP  OR  SWIPE  TO  START' : 'PRESS  SPACE  TO  START',
         W / 2, H - 88, 12, C.text, 'center'
       );
     }
-    drawText(ctx, '← →  MOVE       SPACE / Z  FIRE', W / 2, H - 64, 9, C.textDim, 'center', false);
+    drawText(ctx, 'SWIPE LEFT/RIGHT TO MOVE', W / 2, H - 64, 9, C.textDim, 'center', false);
   }
 
   _renderGameOver(ctx) {
@@ -1217,7 +1160,7 @@ class Game {
 
     if (Math.floor(Date.now() / 620) % 2 === 0) {
       drawText(ctx,
-        this.isMobile ? 'TAP  FIRE  TO  PLAY  AGAIN' : 'SPACE  TO  PLAY  AGAIN',
+        this.isMobile ? 'TAP  OR  SWIPE  TO  PLAY  AGAIN' : 'SPACE  TO  PLAY  AGAIN',
         W / 2, 368, 12, C.text, 'center'
       );
     }
@@ -1241,18 +1184,11 @@ class Game {
 
   _bindResize() {
     window.addEventListener('resize', () => this._resize());
-    // Re-check when touch-controls bar appears/collapses
-    if (window.ResizeObserver) {
-      new ResizeObserver(() => this._resize())
-        .observe(document.getElementById('touch-controls'));
-    }
   }
 
   _resize() {
-    const tc   = document.getElementById('touch-controls');
-    const tcH  = tc ? tc.offsetHeight : 0;
     const avW  = window.innerWidth;
-    const avH  = window.innerHeight - tcH;
+    const avH  = window.innerHeight - 30; // Account for margin-bottom
 
     // Fit inside available space, maintain logical aspect ratio
     const scale = Math.min(avW / W, avH / H);
@@ -1280,25 +1216,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('gameCanvas');
   const game   = new Game(canvas);
 
-  Input.init();
+  Input.init(canvas);
 
-  // ── Edge-triggered Space / Enter key (start + restart, not fire-while-playing)
-  let prevFire = false;
-  function handleFireEdge(active) {
-    if (active && !prevFire) {
-      if (game.state === 'start' || game.state === 'gameover') game.action();
-    }
-    prevFire = active;
+  // ── Start / Restart triggers ───────────────────────────────────
+  function tryStartGame() {
+    if (game.state === 'start' || game.state === 'gameover') game.action();
   }
 
-  // ── Canvas tap → start / restart ──────────────────────────────
-  canvas.addEventListener('click', () => game.action());
-  canvas.addEventListener('touchend', e => {
-    e.preventDefault();
-    if (game.state !== 'playing' && game.state !== 'dying' && game.state !== 'levelclear') {
-      game.action();
-    }
-  }, { passive: false });
+  window.addEventListener('pointerdown', tryStartGame);
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space' || e.code === 'Enter') tryStartGame();
+  });
 
   // Block pull-to-refresh / context menu
   document.addEventListener('contextmenu', e => e.preventDefault());
@@ -1311,8 +1239,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Cap dt to 50 ms to avoid spiral-of-death after tab focus restore
     const dt = Math.min((ts - lastTs) / 1000, 0.05);
     lastTs   = ts;
-
-    handleFireEdge(Input.isFire());
 
     game.update(dt);
     game.render();
