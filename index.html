@@ -510,9 +510,8 @@ class AlienGrid {
    * One alien left = ~5× the initial speed.
    */
   get speed() {
-    const ratio = this.count / (ALIEN_ROWS * ALIEN_COLS); // 1.0 → 0.0
-    // Reduced max speed multiplier from 4.5 to 2.0 so they don't zip too fast at the end
-    return 28 * (1 + (1 - ratio) * 2.0) * (1 + (this.level - 1) * 0.25);
+    // Consistent speed throughout the level (no speed-up as aliens are destroyed)
+    return 45 * (1 + (this.level - 1) * 0.25);
   }
 
   _nextFireDelay() {
@@ -559,7 +558,10 @@ class AlienGrid {
     const live     = this.liveAliens;
     const leftEdge = Math.min(...live.map(a => a.x));
     const rightEdge= Math.max(...live.map(a => a.x + ALIEN_SPRITE_W));
-    if (rightEdge >= W - 6 || leftEdge <= 6) this.pendingDrop = true;
+    // Only trigger drop if moving TOWARDS the edge to prevent getting stuck in a drop loop
+    if ((rightEdge >= W - 6 && this.stepDir > 0) || (leftEdge <= 6 && this.stepDir < 0)) {
+      this.pendingDrop = true;
+    }
 
     // ── Alien firing ──────────────────────────────────────────────
     this.fireTimer -= dt;
