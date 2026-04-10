@@ -1,0 +1,5 @@
+{
+  "name": "Space Invaders",
+  "description": "A classic Space Invaders clone with retro CRT effects.",
+  "requestFramePermissions": []
+}

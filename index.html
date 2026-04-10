@@ -1,0 +1,1331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>SPACE INVADERS</title>
+  <style>
+    /* ── Reset & base ───────────────────────────────────────────── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0; padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      overflow: hidden;
+      touch-action: none;       /* prevent scroll/zoom while playing */
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* ── Game wrapper (sized by JS) ─────────────────────────────── */
+    #game-wrap {
+      position: relative;
+      flex-shrink: 0;
+      /* subtle outer glow to sell the CRT vibe */
+      box-shadow: 0 0 40px rgba(0, 255, 80, 0.12);
+    }
+
+    /* ── Canvas: pixel-perfect scaling ─────────────────────────── */
+    #gameCanvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      cursor: crosshair;
+    }
+
+    /* ── CRT scanlines overlay (pointer-events: none) ───────────── */
+    #crt {
+      position: absolute; inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.18) 2px,
+        rgba(0, 0, 0, 0.18) 4px
+      );
+      z-index: 10;
+    }
+
+    /* ── CRT vignette ───────────────────────────────────────────── */
+    #vignette {
+      position: absolute; inset: 0;
+      pointer-events: none;
+      background: radial-gradient(ellipse at center,
+        transparent 55%,
+        rgba(0, 0, 0, 0.55) 100%
+      );
+      z-index: 11;
+    }
+
+    /* ── Touch control bar ──────────────────────────────────────── */
+    #touch-controls {
+      display: none;             /* hidden by default; shown on touch devices */
+      width: 100%;
+      flex-shrink: 0;
+      background: #000;
+      padding: 10px 14px;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      border-top: 1px solid #001a00;
+    }
+
+    /* Reveal touch controls only on genuine touch/mobile devices */
+    @media (hover: none) and (pointer: coarse) {
+      #touch-controls { display: flex; }
+    }
+
+    .touch-btn {
+      flex: 1;
+      height: 72px;
+      border: 2px solid #00cc44;
+      background: rgba(0, 204, 68, 0.06);
+      color: #00cc44;
+      font-family: 'Courier New', monospace;
+      font-size: 26px;
+      font-weight: bold;
+      border-radius: 10px;
+      cursor: pointer;
+      touch-action: none;
+      letter-spacing: 2px;
+      transition: background 0.08s, box-shadow 0.08s;
+    }
+    .touch-btn:active,
+    .touch-btn.pressed {
+      background: rgba(0, 204, 68, 0.22);
+      box-shadow: 0 0 12px rgba(0, 204, 68, 0.35);
+    }
+
+    #btn-fire {
+      flex: 1.4;
+      color: #ff4444;
+      border-color: #ff4444;
+      background: rgba(255, 68, 68, 0.06);
+      font-size: 13px;
+      letter-spacing: 4px;
+    }
+    #btn-fire:active,
+    #btn-fire.pressed {
+      background: rgba(255, 68, 68, 0.22);
+      box-shadow: 0 0 12px rgba(255, 68, 68, 0.35);
+    }
+  </style>
+</head>
+<body>
+
+<!-- Canvas container -->
+<div id="game-wrap">
+  <canvas id="gameCanvas"></canvas>
+  <div id="crt"></div>
+  <div id="vignette"></div>
+</div>
+
+<!-- Mobile on-screen controls (only visible on touch devices) -->
+<div id="touch-controls" aria-label="Game controls">
+  <button class="touch-btn" id="btn-left"  aria-label="Move left">◀◀</button>
+  <button class="touch-btn" id="btn-fire"  aria-label="Fire">FIRE</button>
+  <button class="touch-btn" id="btn-right" aria-label="Move right">▶▶</button>
+</div>
+
+<script>
+'use strict';
+
+// ================================================================
+// SECTION 1 — CONSTANTS & CONFIG
+// ================================================================
+
+const W = 480;   // logical canvas width  (CSS scales this)
+const H = 640;   // logical canvas height
+
+const SP = 2;    // sprite pixel size: each "bit" is SP×SP canvas pixels
+
+// Alien grid dimensions
+const ALIEN_COLS       = 11;
+const ALIEN_ROWS       = 5;
+const ALIEN_CELL_W     = 40;   // cell width  (includes horizontal gap)
+const ALIEN_CELL_H     = 32;   // cell height (includes vertical gap)
+const ALIEN_SPRITE_W   = 16;   // visual sprite width  (8 bits × SP=2)
+const ALIEN_SPRITE_H   = 16;   // visual sprite height (8 bits × SP=2)
+
+// Player config
+const PLAYER_SPEED       = 230;   // px / second
+const PLAYER_BULLET_COOL = 0.42;  // seconds between shots
+const BULLET_SPEED_P     = 440;   // player bullet speed (px/s, upward)
+const BULLET_SPEED_A     = 175;   // alien  bullet speed (px/s, downward)
+const UFO_SPEED          = 115;   // px/s
+
+// Bunker config
+const BUNKER_COLS   = 8;
+const BUNKER_ROWS   = 6;
+const BUNKER_CELL   = 5;    // pixel size of each bunker cell
+const NUM_BUNKERS   = 4;
+const BUNKER_MAX_HP = 3;
+
+// Colour palette
+const C = {
+  bg:       '#000000',
+  player:   '#00ff88',
+  alienT:   '#ffff44',   // top row (type 0)
+  alienM:   '#ff9900',   // middle rows (type 1)
+  alienB:   '#ff4444',   // bottom rows (type 2)
+  ufo:      '#ff22ee',
+  bunker:   '#00ee44',
+  bullet:   '#ffffff',
+  abullet:  '#ff6633',
+  text:     '#00ff88',
+  textDim:  '#005522',
+  hud:      '#00cc55',
+  star:     '#ffffff',
+  flash:    '#ff0000',
+};
+
+// ================================================================
+// SECTION 2 — PIXEL-ART SPRITES  (8×8 bits, drawn at SP=2 → 16×16)
+// Each element: [frame0, frame1], each frame: array of 8 rows (each row = array of 8 bits)
+// ================================================================
+
+const ALIEN_SPRITES = [
+  // ── Type 0: top row "crab" (30 pts) ──────────────────────────
+  [
+    [ [0,0,1,0,0,1,0,0],
+      [0,0,0,1,1,0,0,0],
+      [0,1,1,1,1,1,1,0],
+      [1,0,1,1,1,1,0,1],
+      [1,1,1,1,1,1,1,1],
+      [0,1,0,1,1,0,1,0],
+      [1,0,0,0,0,0,0,1],
+      [0,1,0,0,0,0,1,0] ],
+    [ [0,0,1,0,0,1,0,0],
+      [1,0,0,1,1,0,0,1],
+      [1,1,1,1,1,1,1,1],
+      [1,1,1,1,1,1,1,1],
+      [0,1,1,1,1,1,1,0],
+      [0,0,1,0,0,1,0,0],
+      [0,1,0,1,1,0,1,0],
+      [1,0,0,0,0,0,0,1] ],
+  ],
+  // ── Type 1: middle rows "squid" (20 pts) ─────────────────────
+  [
+    [ [0,0,0,1,1,0,0,0],
+      [0,1,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1,1],
+      [1,1,0,1,1,0,1,1],
+      [1,1,1,1,1,1,1,1],
+      [0,0,1,0,0,1,0,0],
+      [0,1,0,1,1,0,1,0],
+      [1,0,1,0,0,1,0,1] ],
+    [ [0,0,0,1,1,0,0,0],
+      [0,1,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1,1],
+      [1,0,1,1,1,1,0,1],
+      [1,1,1,1,1,1,1,1],
+      [0,1,0,1,1,0,1,0],
+      [1,0,0,0,0,0,0,1],
+      [0,1,0,0,0,0,1,0] ],
+  ],
+  // ── Type 2: bottom rows "octopus" (10 pts) ───────────────────
+  [
+    [ [0,1,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1,1],
+      [1,1,0,1,1,0,1,1],
+      [1,1,1,1,1,1,1,1],
+      [0,1,0,1,1,0,1,0],
+      [0,0,1,1,1,1,0,0],
+      [0,1,0,0,0,0,1,0],
+      [0,0,1,0,0,1,0,0] ],
+    [ [0,1,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1,1],
+      [1,0,1,1,1,1,0,1],
+      [1,1,1,1,1,1,1,1],
+      [1,0,0,1,1,0,0,1],
+      [0,0,0,1,1,0,0,0],
+      [0,0,1,0,0,1,0,0],
+      [0,1,0,0,0,0,1,0] ],
+  ],
+];
+
+// UFO — 14 wide × 8 tall
+const UFO_SPRITE = [
+  [0,0,0,0,1,1,1,1,1,1,0,0,0,0],
+  [0,0,0,1,1,1,1,1,1,1,1,0,0,0],
+  [0,0,1,1,0,1,1,1,1,0,1,1,0,0],
+  [0,1,1,1,1,1,1,1,1,1,1,1,1,0],
+  [1,1,0,1,0,1,0,0,1,0,1,0,1,1],
+  [1,1,1,1,1,1,0,0,1,1,1,1,1,1],
+  [0,0,1,1,0,0,0,0,0,0,1,1,0,0],
+  [0,0,0,1,0,0,0,0,0,0,1,0,0,0],
+];
+
+// Player ship — 14 wide × 8 tall
+const PLAYER_SPRITE = [
+  [0,0,0,0,0,0,1,1,0,0,0,0,0,0],
+  [0,0,0,0,0,1,1,1,1,0,0,0,0,0],
+  [0,0,0,0,0,1,1,1,1,0,0,0,0,0],
+  [0,1,1,1,1,1,1,1,1,1,1,1,1,0],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,1,0,1,1,1,1,1,1,1,1,1,0,1],
+  [1,0,0,0,1,1,1,1,1,1,0,0,0,1],
+];
+
+// Bunker archway mask (1 = solid cell, 0 = empty)
+const BUNKER_SHAPE = [
+  [0,1,1,1,1,1,1,0],
+  [1,1,1,1,1,1,1,1],
+  [1,1,1,1,1,1,1,1],
+  [1,1,1,1,1,1,1,1],
+  [1,1,1,0,0,1,1,1],
+  [1,1,0,0,0,0,1,1],
+];
+
+// ================================================================
+// SECTION 3 — UTILITY HELPERS
+// ================================================================
+
+/**
+ * Draw a pixel-art sprite defined as a 2-D array of 0/1 bits.
+ * Each '1' bit is rendered as a pixelSize × pixelSize filled square.
+ */
+function drawSprite(ctx, bitmap, x, y, pixelSize, color) {
+  ctx.fillStyle = color;
+  for (let r = 0; r < bitmap.length; r++) {
+    for (let c = 0; c < bitmap[r].length; c++) {
+      if (bitmap[r][c]) {
+        ctx.fillRect(
+          Math.floor(x + c * pixelSize),
+          Math.floor(y + r * pixelSize),
+          pixelSize, pixelSize
+        );
+      }
+    }
+  }
+}
+
+/** Render glowing retro text on the canvas. */
+function drawText(ctx, text, x, y, size, color, align = 'left', glow = true) {
+  ctx.font       = `bold ${size}px 'Courier New', monospace`;
+  ctx.textAlign  = align;
+  ctx.textBaseline = 'top';
+  if (glow) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur  = 10;
+  }
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+  ctx.shadowBlur = 0;
+}
+
+/** Axis-aligned bounding-box overlap test. */
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+/** Zero-pad a number to a given width. */
+const pad = (n, w) => String(n).padStart(w, '0');
+
+// ================================================================
+// SECTION 4 — INPUT MANAGER
+// ================================================================
+
+const Input = {
+  keys:  {},
+  touch: { left: false, right: false, fire: false },
+
+  init() {
+    // ── Keyboard ──────────────────────────────────────────────────
+    document.addEventListener('keydown', e => {
+      this.keys[e.code] = true;
+      // Suppress browser scroll for game keys
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) {
+        e.preventDefault();
+      }
+    });
+    document.addEventListener('keyup', e => { this.keys[e.code] = false; });
+
+    // ── Touch buttons ─────────────────────────────────────────────
+    const bindBtn = (id, prop) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+
+      const press = e => {
+        e.preventDefault();
+        this.touch[prop] = true;
+        el.classList.add('pressed');
+      };
+      const release = e => {
+        e.preventDefault();
+        this.touch[prop] = false;
+        el.classList.remove('pressed');
+      };
+
+      // Touch events
+      el.addEventListener('touchstart',  press,   { passive: false });
+      el.addEventListener('touchend',    release, { passive: false });
+      el.addEventListener('touchcancel', release, { passive: false });
+
+      // Mouse fallback (desktop testing with on-screen buttons)
+      el.addEventListener('mousedown',  press);
+      el.addEventListener('mouseup',    release);
+      el.addEventListener('mouseleave', release);
+    };
+
+    bindBtn('btn-left',  'left');
+    bindBtn('btn-right', 'right');
+    bindBtn('btn-fire',  'fire');
+  },
+
+  isLeft()  { return !!(this.keys['ArrowLeft']  || this.keys['KeyA'] || this.touch.left);  },
+  isRight() { return !!(this.keys['ArrowRight'] || this.keys['KeyD'] || this.touch.right); },
+  isFire()  { return !!(this.keys['Space'] || this.keys['KeyZ'] || this.keys['KeyX']
+                        || this.keys['Enter'] || this.touch.fire);                          },
+};
+
+// ================================================================
+// SECTION 5 — BULLET
+// ================================================================
+
+class Bullet {
+  /**
+   * @param {number} x      - horizontal centre
+   * @param {number} y      - top edge
+   * @param {number} vy     - velocity (negative = up / player, positive = down / alien)
+   * @param {boolean} isPlayer
+   */
+  constructor(x, y, vy, isPlayer) {
+    this.x = x;
+    this.y = y;
+    this.vy = vy;
+    this.isPlayer = isPlayer;
+    this.w = 3;
+    this.h = isPlayer ? 14 : 9;
+    this.active = true;
+  }
+
+  update(dt) {
+    this.y += this.vy * dt;
+    if (this.y < -20 || this.y > H + 20) this.active = false;
+  }
+
+  draw(ctx) {
+    if (!this.active) return;
+
+    if (this.isPlayer) {
+      // Bright white laser streak
+      ctx.shadowColor = C.bullet;
+      ctx.shadowBlur  = 6;
+      ctx.fillStyle   = C.bullet;
+      ctx.fillRect(this.x - 1, this.y, 3, this.h);
+      ctx.shadowBlur = 0;
+    } else {
+      // Alien bullet: animated zigzag
+      ctx.shadowColor = C.abullet;
+      ctx.shadowBlur  = 5;
+      ctx.fillStyle   = C.abullet;
+      for (let i = 0; i < 3; i++) {
+        const offset = (i % 2 === 0) ? -1 : 1;
+        ctx.fillRect(this.x + offset, this.y + i * 3, 3, 3);
+      }
+      ctx.shadowBlur = 0;
+    }
+  }
+}
+
+// ================================================================
+// SECTION 6 — PLAYER
+// ================================================================
+
+class Player {
+  constructor() {
+    // Compute visual size from sprite dimensions × SP
+    this.sw = PLAYER_SPRITE[0].length * SP;   // 14 * 2 = 28
+    this.sh = PLAYER_SPRITE.length    * SP;   //  8 * 2 = 16
+
+    this.x = W / 2 - this.sw / 2;
+    this.y = H - 58;
+
+    this.lives      = 3;
+    this.shootCooldown = 0;
+    this.invincible    = 0;    // seconds of post-hit immunity
+    this.exploding     = 0;    // seconds of explosion anim
+  }
+
+  update(dt) {
+    if (this.exploding > 0) {
+      this.exploding -= dt;
+      return;                   // frozen during explosion
+    }
+
+    if (this.invincible > 0) this.invincible -= dt;
+
+    if (Input.isLeft())  this.x = Math.max(8,          this.x - PLAYER_SPEED * dt);
+    if (Input.isRight()) this.x = Math.min(W - this.sw - 8, this.x + PLAYER_SPEED * dt);
+
+    if (this.shootCooldown > 0) this.shootCooldown -= dt;
+  }
+
+  /** Returns a new player Bullet if the cooldown allows, else null. */
+  tryShoot() {
+    if (this.shootCooldown > 0 || this.exploding > 0) return null;
+    this.shootCooldown = PLAYER_BULLET_COOL;
+    return new Bullet(this.x + this.sw / 2, this.y, -BULLET_SPEED_P, true);
+  }
+
+  /** Call when hit by an alien bullet; returns true if the hit registers. */
+  registerHit() {
+    if (this.invincible > 0 || this.exploding > 0) return false;
+    this.lives--;
+    this.exploding  = 1.2;
+    this.invincible = 2.8;
+    return true;
+  }
+
+  draw(ctx) {
+    // Suppress rendering during certain frames of animation
+    if (this.exploding > 0 && Math.floor(this.exploding * 9) % 2 === 0) return;
+    if (this.invincible > 0 && this.exploding <= 0 && Math.floor(this.invincible * 6) % 2 === 0) return;
+
+    ctx.shadowColor = C.player;
+    ctx.shadowBlur  = 7;
+    drawSprite(ctx, PLAYER_SPRITE, this.x, this.y, SP, C.player);
+    ctx.shadowBlur  = 0;
+  }
+}
+
+// ================================================================
+// SECTION 7 — ALIEN (single unit)
+// ================================================================
+
+class Alien {
+  /**
+   * @param {number} col   - grid column index
+   * @param {number} row   - grid row index
+   * @param {number} type  - sprite/colour type (0 / 1 / 2)
+   * @param {number} x     - logical x position
+   * @param {number} y     - logical y position
+   */
+  constructor(col, row, type, x, y) {
+    this.col   = col;
+    this.row   = row;
+    this.type  = type;
+    this.x     = x;
+    this.y     = y;
+    this.alive = true;
+    // Points awarded per type (top = most valuable)
+    this.points = [30, 20, 10][type];
+  }
+
+  get color() { return [C.alienT, C.alienM, C.alienB][this.type]; }
+}
+
+// ================================================================
+// SECTION 8 — ALIEN GRID
+// ================================================================
+
+class AlienGrid {
+  constructor(level = 1) {
+    this.level       = level;
+    this.frame       = 0;       // animation frame index (0 or 1)
+    this.animTimer   = 0;
+    this.stepDir     = 1;       // +1 right, -1 left
+    this.pendingDrop = false;   // drop on next tick after direction change
+    this.aliens      = [];
+    this.bullets     = [];
+    this.fireTimer   = this._nextFireDelay();
+
+    // Grid starts a bit lower on higher levels (slightly more threatening)
+    const startX = (W - ALIEN_COLS * ALIEN_CELL_W) / 2;
+    const startY = 72 + Math.min((level - 1) * 6, 30);
+
+    for (let row = 0; row < ALIEN_ROWS; row++) {
+      for (let col = 0; col < ALIEN_COLS; col++) {
+        // Row 0 = crab (type 0), rows 1–2 = squid (type 1), rows 3–4 = octopus (type 2)
+        const type = row === 0 ? 0 : row <= 2 ? 1 : 2;
+        this.aliens.push(new Alien(
+          col, row, type,
+          startX + col * ALIEN_CELL_W,
+          startY + row * ALIEN_CELL_H
+        ));
+      }
+    }
+  }
+
+  get liveAliens() { return this.aliens.filter(a => a.alive); }
+  get count()      { return this.liveAliens.length; }
+
+  /**
+   * Horizontal speed scales up as the grid thins out, and with level.
+   * One alien left = ~5× the initial speed.
+   */
+  get speed() {
+    const ratio = this.count / (ALIEN_ROWS * ALIEN_COLS); // 1.0 → 0.0
+    return 28 * (1 + (1 - ratio) * 4.5) * (1 + (this.level - 1) * 0.25);
+  }
+
+  _nextFireDelay() {
+    // Base interval decreases (fire more often) on higher levels
+    return (0.4 + Math.random() * 0.9) / (1 + (this.level - 1) * 0.15);
+  }
+
+  /** The lowest-row alive alien in each column — the ones that can shoot. */
+  _shooters() {
+    const result = [];
+    for (let c = 0; c < ALIEN_COLS; c++) {
+      const col = this.aliens
+        .filter(a => a.alive && a.col === c)
+        .sort((a, b) => b.row - a.row);
+      if (col.length) result.push(col[0]);
+    }
+    return result;
+  }
+
+  update(dt) {
+    if (this.count === 0) return;
+
+    // ── Sprite animation ─────────────────────────────────────────
+    // Animate faster when fewer aliens remain
+    const animInterval = Math.max(0.08, 0.55 * (this.count / (ALIEN_ROWS * ALIEN_COLS)));
+    this.animTimer += dt;
+    if (this.animTimer >= animInterval) {
+      this.animTimer = 0;
+      this.frame = 1 - this.frame;
+    }
+
+    // ── Movement ─────────────────────────────────────────────────
+    if (this.pendingDrop) {
+      this.aliens.forEach(a => { if (a.alive) a.y += 18; });
+      this.stepDir *= -1;
+      this.pendingDrop = false;
+      return; // skip horizontal movement this tick to avoid double-step
+    }
+
+    const step = this.speed * dt * this.stepDir;
+    this.aliens.forEach(a => { if (a.alive) a.x += step; });
+
+    // Edge detection
+    const live     = this.liveAliens;
+    const leftEdge = Math.min(...live.map(a => a.x));
+    const rightEdge= Math.max(...live.map(a => a.x + ALIEN_SPRITE_W));
+    if (rightEdge >= W - 6 || leftEdge <= 6) this.pendingDrop = true;
+
+    // ── Alien firing ──────────────────────────────────────────────
+    this.fireTimer -= dt;
+    if (this.fireTimer <= 0) {
+      this.fireTimer = this._nextFireDelay();
+      const shooters = this._shooters();
+      if (shooters.length) {
+        const s = shooters[Math.floor(Math.random() * shooters.length)];
+        this.bullets.push(new Bullet(
+          s.x + ALIEN_SPRITE_W / 2,
+          s.y + ALIEN_SPRITE_H,
+          BULLET_SPEED_A,
+          false
+        ));
+      }
+    }
+
+    // ── Update alien bullets ──────────────────────────────────────
+    this.bullets.forEach(b => b.update(dt));
+    this.bullets = this.bullets.filter(b => b.active);
+  }
+
+  draw(ctx) {
+    this.aliens.forEach(alien => {
+      if (!alien.alive) return;
+      const bitmap = ALIEN_SPRITES[alien.type][this.frame];
+      // Centre the 16×16 sprite within its cell
+      const ox = alien.x + (ALIEN_CELL_W  - ALIEN_SPRITE_W)  / 2;
+      const oy = alien.y + (ALIEN_CELL_H  - ALIEN_SPRITE_H)  / 2;
+      ctx.shadowColor = alien.color;
+      ctx.shadowBlur  = 6;
+      drawSprite(ctx, bitmap, ox, oy, SP, alien.color);
+      ctx.shadowBlur  = 0;
+    });
+
+    this.bullets.forEach(b => b.draw(ctx));
+  }
+
+  /** Returns true when any alien has descended into the danger zone. */
+  hasInvaded() {
+    return this.liveAliens.some(a => a.y + ALIEN_SPRITE_H >= H - 90);
+  }
+}
+
+// ================================================================
+// SECTION 9 — UFO (MYSTERY SHIP)
+// ================================================================
+
+class UFO {
+  constructor() {
+    this.sw = UFO_SPRITE[0].length * SP;  // 14 * 2 = 28
+    this.sh = UFO_SPRITE.length    * SP;  //  8 * 2 = 16
+    this.y  = 44;
+
+    this.active   = false;
+    this.x        = 0;
+    this.vx       = 0;
+    this.spawnCD  = this._spawnDelay();
+
+    this.lastPts  = 0;
+    this.ptsTimer = 0;       // show score flash after hit
+    this.ptsX     = W / 2;
+  }
+
+  _spawnDelay() { return 15 + Math.random() * 22; }
+
+  update(dt) {
+    if (this.ptsTimer > 0) this.ptsTimer -= dt;
+
+    if (!this.active) {
+      this.spawnCD -= dt;
+      if (this.spawnCD <= 0) {
+        this.active = true;
+        // Randomly enter from left or right
+        if (Math.random() < 0.5) {
+          this.x  = -this.sw;
+          this.vx =  UFO_SPEED;
+        } else {
+          this.x  = W + this.sw;
+          this.vx = -UFO_SPEED;
+        }
+      }
+      return;
+    }
+
+    this.x += this.vx * dt;
+    if (this.x < -this.sw - 10 || this.x > W + 10) {
+      this.active  = false;
+      this.spawnCD = this._spawnDelay();
+    }
+  }
+
+  /** Called when player bullet hits UFO; returns points scored. */
+  hit() {
+    const pts = [50, 100, 150, 200, 300][Math.floor(Math.random() * 5)];
+    this.lastPts  = pts;
+    this.ptsTimer = 1.8;
+    this.ptsX     = this.x + this.sw / 2;
+    this.active   = false;
+    this.spawnCD  = this._spawnDelay();
+    return pts;
+  }
+
+  draw(ctx) {
+    // Flash the scored points at the hit location
+    if (this.ptsTimer > 0) {
+      drawText(ctx, `${this.lastPts}`, this.ptsX, this.y + 2, 14, C.ufo, 'center');
+    }
+    if (!this.active) return;
+    ctx.shadowColor = C.ufo;
+    ctx.shadowBlur  = 10;
+    drawSprite(ctx, UFO_SPRITE, this.x, this.y, SP, C.ufo);
+    ctx.shadowBlur  = 0;
+  }
+}
+
+// ================================================================
+// SECTION 10 — BUNKER
+// ================================================================
+
+class Bunker {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    // Each cell: hp from BUNKER_MAX_HP (full) down to 0 (destroyed)
+    this.cells = BUNKER_SHAPE.map(row => row.map(v => v * BUNKER_MAX_HP));
+  }
+
+  /**
+   * Test a bullet against this bunker.
+   * If a cell is hit: reduce hp, deactivate bullet, return true.
+   */
+  testBullet(bullet) {
+    if (!bullet.active) return false;
+    for (let r = 0; r < BUNKER_ROWS; r++) {
+      for (let c = 0; c < BUNKER_COLS; c++) {
+        if (this.cells[r][c] <= 0) continue;
+        const cx = this.x + c * BUNKER_CELL;
+        const cy = this.y + r * BUNKER_CELL;
+        if (rectsOverlap(
+          bullet.x - 1, bullet.y, bullet.w, bullet.h,
+          cx, cy, BUNKER_CELL, BUNKER_CELL
+        )) {
+          this.cells[r][c]--;
+          // Splash damage: randomly erode a neighbour for organic destruction
+          if (Math.random() < 0.45) {
+            const nr = r + (Math.random() < 0.5 ? -1 : 1);
+            const nc = c + (Math.random() < 0.5 ? -1 : 1);
+            if (nr >= 0 && nr < BUNKER_ROWS && nc >= 0 && nc < BUNKER_COLS) {
+              this.cells[nr][nc] = Math.max(0, this.cells[nr][nc] - 1);
+            }
+          }
+          bullet.active = false;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  draw(ctx) {
+    for (let r = 0; r < BUNKER_ROWS; r++) {
+      for (let c = 0; c < BUNKER_COLS; c++) {
+        const hp = this.cells[r][c];
+        if (hp <= 0) continue;
+        // Colour and opacity degrade with damage
+        const t     = hp / BUNKER_MAX_HP;          // 1 = intact, ~0.33 = barely standing
+        const green = Math.floor(80 + t * 175);
+        ctx.fillStyle   = `rgba(0, ${green}, 60, ${0.45 + t * 0.55})`;
+        ctx.shadowColor = C.bunker;
+        ctx.shadowBlur  = hp > 1 ? 3 : 1;
+        ctx.fillRect(
+          this.x + c * BUNKER_CELL,
+          this.y + r * BUNKER_CELL,
+          BUNKER_CELL, BUNKER_CELL
+        );
+      }
+    }
+    ctx.shadowBlur = 0;
+  }
+}
+
+// ================================================================
+// SECTION 11 — PARTICLE SYSTEM
+// ================================================================
+
+class Particle {
+  constructor(x, y, color) {
+    this.x     = x;
+    this.y     = y;
+    this.vx    = (Math.random() - 0.5) * 190;
+    this.vy    = (Math.random() - 0.5) * 190 - 50;
+    this.life  = 0.55 + Math.random() * 0.45;
+    this.maxL  = this.life;
+    this.size  = 2 + Math.random() * 3;
+    this.color = color;
+  }
+
+  update(dt) {
+    this.x  += this.vx * dt;
+    this.y  += this.vy * dt;
+    this.vy += 220 * dt;    // gravity
+    this.life -= dt;
+  }
+
+  draw(ctx) {
+    const a = Math.max(0, this.life / this.maxL);
+    ctx.globalAlpha = a;
+    ctx.fillStyle   = this.color;
+    ctx.shadowColor = this.color;
+    ctx.shadowBlur  = 5;
+    ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+    ctx.shadowBlur  = 0;
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ================================================================
+// SECTION 12 — STAR FIELD (atmospheric background)
+// ================================================================
+
+class StarField {
+  constructor(count = 90) {
+    this.stars = Array.from({ length: count }, () => ({
+      x:     Math.random() * W,
+      y:     Math.random() * H,
+      size:  Math.random() < 0.75 ? 1 : 2,
+      base:  0.15 + Math.random() * 0.75,
+      speed: 0.6 + Math.random() * 2.2,
+      phase: Math.random() * Math.PI * 2,
+    }));
+    this.t = 0;
+  }
+
+  update(dt) { this.t += dt; }
+
+  draw(ctx) {
+    this.stars.forEach(s => {
+      const alpha = s.base * (0.65 + 0.35 * Math.sin(this.t * s.speed + s.phase));
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle   = C.star;
+      ctx.fillRect(s.x, s.y, s.size, s.size);
+    });
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ================================================================
+// SECTION 13 — GAME  (state machine + main loop coordination)
+// ================================================================
+
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx    = canvas.getContext('2d');
+
+    // ── Persistent state ────────────────────────────────────────
+    this.highScore = parseInt(localStorage.getItem('si_hs') || '0', 10);
+
+    // ── Runtime state (reset on new game) ───────────────────────
+    this.state    = 'start';   // 'start' | 'playing' | 'levelclear' | 'gameover'
+    this.score    = 0;
+    this.level    = 1;
+
+    this.player        = null;
+    this.grid          = null;
+    this.bunkers       = [];
+    this.ufo           = null;
+    this.pBullets      = [];    // player bullets
+    this.particles     = [];
+    this.stars         = new StarField();
+
+    this.flashTimer    = 0;     // red screen flash on hit
+    this.clearTimer    = 0;     // pause between levels
+    this.isMobile      = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
+    this._bindResize();
+    this._resize();
+  }
+
+  // ── Game lifecycle ──────────────────────────────────────────────
+
+  startGame() {
+    this.state    = 'playing';
+    this.score    = 0;
+    this.level    = 1;
+    this.player   = new Player();
+    this.grid     = new AlienGrid(1);
+    this.bunkers  = this._makeBunkers();
+    this.ufo      = new UFO();
+    this.pBullets = [];
+    this.particles= [];
+  }
+
+  _levelClear() {
+    this.state      = 'levelclear';
+    this.clearTimer = 2.2;
+    this.grid.bullets = [];
+    this.pBullets     = [];
+  }
+
+  _nextLevel() {
+    this.level++;
+    this.state   = 'playing';
+    this.grid    = new AlienGrid(this.level);
+    this.bunkers = this._makeBunkers();
+    this.ufo     = new UFO();
+    this.player.shootCooldown = 0;
+  }
+
+  _endGame() {
+    if (this.score > this.highScore) {
+      this.highScore = this.score;
+      localStorage.setItem('si_hs', this.highScore);
+    }
+    this.state = 'gameover';
+  }
+
+  /** Action triggered by Space, Enter, Fire, or canvas tap — context-sensitive. */
+  action() {
+    if (this.state === 'start' || this.state === 'gameover') this.startGame();
+  }
+
+  // ── World builder ───────────────────────────────────────────────
+
+  _makeBunkers() {
+    const bW = BUNKER_COLS * BUNKER_CELL;          // 40
+    const gap = 28;
+    const totalW = NUM_BUNKERS * bW + (NUM_BUNKERS - 1) * gap;
+    const sx = (W - totalW) / 2;
+    const sy = H - 138;
+    return Array.from({ length: NUM_BUNKERS }, (_, i) =>
+      new Bunker(sx + i * (bW + gap), sy)
+    );
+  }
+
+  // ── Explosion helper ────────────────────────────────────────────
+
+  _explode(x, y, color, n = 12) {
+    for (let i = 0; i < n; i++) this.particles.push(new Particle(x, y, color));
+  }
+
+  // ── Update ─────────────────────────────────────────────────────
+
+  update(dt) {
+    this.stars.update(dt);
+    if (this.flashTimer > 0) this.flashTimer -= dt;
+
+    // ── Level-clear interstitial ───────────────────────────────
+    if (this.state === 'levelclear') {
+      this.clearTimer -= dt;
+      this.particles.forEach(p => p.update(dt));
+      this.particles = this.particles.filter(p => p.life > 0);
+      if (this.clearTimer <= 0) this._nextLevel();
+      return;
+    }
+
+    if (this.state !== 'playing') return;
+
+    // ── Player input → fire ────────────────────────────────────
+    if (Input.isFire()) {
+      const b = this.player.tryShoot();
+      if (b) this.pBullets.push(b);
+    }
+
+    // ── Entity updates ─────────────────────────────────────────
+    this.player.update(dt);
+    this.grid.update(dt);
+    this.ufo.update(dt);
+
+    this.pBullets.forEach(b => b.update(dt));
+    this.pBullets = this.pBullets.filter(b => b.active);
+
+    this.particles.forEach(p => p.update(dt));
+    this.particles = this.particles.filter(p => p.life > 0);
+
+    // ── Collision: player bullets → aliens ──────────────────────
+    outer:
+    for (const b of this.pBullets) {
+      if (!b.active) continue;
+      for (const alien of this.grid.aliens) {
+        if (!alien.alive) continue;
+        // Collision box is the visual sprite, not the full cell
+        const ax = alien.x + (ALIEN_CELL_W  - ALIEN_SPRITE_W)  / 2;
+        const ay = alien.y + (ALIEN_CELL_H  - ALIEN_SPRITE_H)  / 2;
+        if (rectsOverlap(b.x - 1, b.y, b.w, b.h, ax, ay, ALIEN_SPRITE_W, ALIEN_SPRITE_H)) {
+          alien.alive  = false;
+          b.active     = false;
+          this.score  += alien.points;
+          this._explode(ax + ALIEN_SPRITE_W / 2, ay + ALIEN_SPRITE_H / 2, alien.color, 10);
+          continue outer;
+        }
+      }
+    }
+
+    // ── Collision: player bullets → UFO ─────────────────────────
+    if (this.ufo.active) {
+      for (const b of this.pBullets) {
+        if (!b.active) continue;
+        if (rectsOverlap(b.x - 1, b.y, b.w, b.h, this.ufo.x, this.ufo.y, this.ufo.sw, this.ufo.sh)) {
+          const pts   = this.ufo.hit();
+          this.score += pts;
+          b.active    = false;
+          this._explode(this.ufo.x + this.ufo.sw / 2, this.ufo.y + this.ufo.sh / 2, C.ufo, 14);
+          break;
+        }
+      }
+    }
+
+    // ── Collision: all bullets → bunkers ────────────────────────
+    for (const b of [...this.pBullets, ...this.grid.bullets]) {
+      for (const bk of this.bunkers) bk.testBullet(b);
+    }
+
+    // ── Collision: alien bullets → player ───────────────────────
+    for (const b of this.grid.bullets) {
+      if (!b.active) continue;
+      if (rectsOverlap(
+        b.x - 1, b.y, b.w, b.h,
+        this.player.x, this.player.y, this.player.sw, this.player.sh
+      )) {
+        if (this.player.registerHit()) {
+          b.active = false;
+          this._explode(
+            this.player.x + this.player.sw / 2,
+            this.player.y + this.player.sh / 2,
+            C.player, 16
+          );
+          this.flashTimer = 0.3;
+          if (this.player.lives <= 0) {
+            // Delay game-over to let explosion animation play
+            this.state = 'dying';
+            setTimeout(() => this._endGame(), 1300);
+          }
+        }
+      }
+    }
+
+    // ── Lose condition: aliens reach player line ─────────────────
+    if (this.grid.hasInvaded()) {
+      this._endGame();
+      return;
+    }
+
+    // ── Win condition: all aliens destroyed ──────────────────────
+    if (this.grid.count === 0) {
+      this._levelClear();
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────────
+
+  render() {
+    const { ctx } = this;
+    ctx.clearRect(0, 0, W, H);
+
+    // Background
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+
+    this.stars.draw(ctx);
+
+    // Screen hit-flash (red tint)
+    if (this.flashTimer > 0) {
+      ctx.globalAlpha = Math.min(0.35, this.flashTimer * 1.2);
+      ctx.fillStyle   = C.flash;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
+    }
+
+    switch (this.state) {
+      case 'start':      this._renderStart(ctx);   break;
+      case 'gameover':   this._renderPlay(ctx);    this._renderGameOver(ctx);  break;
+      case 'levelclear': this._renderPlay(ctx);    this._renderLevelClear(ctx); break;
+      case 'dying':
+      case 'playing':    this._renderPlay(ctx);    break;
+    }
+  }
+
+  // ── Render helpers ──────────────────────────────────────────────
+
+  _renderPlay(ctx) {
+    // Ground line
+    ctx.strokeStyle = C.hud;
+    ctx.lineWidth   = 2;
+    ctx.shadowColor = C.hud;
+    ctx.shadowBlur  = 5;
+    ctx.beginPath();
+    ctx.moveTo(8, H - 42);
+    ctx.lineTo(W - 8, H - 42);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    this.bunkers.forEach(bk => bk.draw(ctx));
+    this.ufo.draw(ctx);
+    this.grid.draw(ctx);
+    this.player.draw(ctx);
+    this.pBullets.forEach(b => b.draw(ctx));
+    this.particles.forEach(p => p.draw(ctx));
+    this._renderHUD(ctx);
+  }
+
+  _renderHUD(ctx) {
+    // ── Score (left) ──────────────────────────────────────────────
+    drawText(ctx, 'SCORE',  16, 7,  10, C.textDim, 'left', false);
+    drawText(ctx, pad(this.score, 5), 16, 19, 15, C.text, 'left');
+
+    // ── High score (centre) ───────────────────────────────────────
+    drawText(ctx, 'HI-SCORE', W / 2, 7,  10, C.textDim, 'center', false);
+    drawText(ctx, pad(this.highScore, 5), W / 2, 19, 15, C.text, 'center');
+
+    // ── Level (right) ─────────────────────────────────────────────
+    drawText(ctx, 'LEVEL',   W - 14, 7,  10, C.textDim, 'right', false);
+    drawText(ctx, pad(this.level, 2),  W - 14, 19, 15, C.text, 'right');
+
+    // ── Lives (bottom left, as mini-ships) ────────────────────────
+    drawText(ctx, 'LIVES', 14, H - 36, 10, C.textDim, 'left', false);
+    for (let i = 0; i < this.player.lives; i++) {
+      ctx.shadowColor = C.player;
+      ctx.shadowBlur  = 4;
+      // Miniature ship: SP=1 → 14×8 pixels
+      drawSprite(ctx, PLAYER_SPRITE, 58 + i * 20, H - 38, 1, C.player);
+      ctx.shadowBlur = 0;
+    }
+
+    // ── Mobile indicator ─────────────────────────────────────────
+    if (this.isMobile) {
+      drawText(ctx, '📱', W - 14, H - 36, 11, C.textDim, 'right', false);
+    }
+  }
+
+  _renderStart(ctx) {
+    // ── Neon title ────────────────────────────────────────────────
+    ctx.shadowColor = '#ff3333';
+    ctx.shadowBlur  = 28;
+    drawText(ctx, 'SPACE',    W / 2, 100, 56, '#ff3333', 'center', false);
+    ctx.shadowColor = '#ff8800';
+    ctx.shadowBlur  = 20;
+    drawText(ctx, 'INVADERS', W / 2, 158, 42, '#ff8800', 'center', false);
+    ctx.shadowBlur = 0;
+
+    // ── Score table ───────────────────────────────────────────────
+    const ty = 260;
+    drawText(ctx, '— SCORE ADVANCE TABLE —', W / 2, ty, 11, C.textDim, 'center', false);
+
+    const rows = [
+      { type: 0, pts: 30, color: C.alienT },
+      { type: 1, pts: 20, color: C.alienM },
+      { type: 2, pts: 10, color: C.alienB },
+    ];
+    rows.forEach((r, i) => {
+      const ry = ty + 26 + i * 38;
+      ctx.shadowColor = r.color;
+      ctx.shadowBlur  = 6;
+      drawSprite(ctx, ALIEN_SPRITES[r.type][0], W / 2 - 72, ry, SP, r.color);
+      ctx.shadowBlur = 0;
+      drawText(ctx, `= ${r.pts} PTS`, W / 2 - 14, ry + 4, 13, r.color, 'left');
+    });
+
+    // UFO row
+    const uy = ty + 26 + rows.length * 38;
+    ctx.shadowColor = C.ufo;
+    ctx.shadowBlur  = 8;
+    drawSprite(ctx, UFO_SPRITE, W / 2 - 72, uy, SP, C.ufo);
+    ctx.shadowBlur  = 0;
+    drawText(ctx, '= ??? PTS', W / 2 - 14, uy + 4, 13, C.ufo, 'left');
+
+    // High score
+    if (this.highScore > 0) {
+      drawText(ctx, `BEST: ${this.highScore}`, W / 2, uy + 44, 14, C.text, 'center');
+    }
+
+    // Blinking prompt
+    if (Math.floor(Date.now() / 520) % 2 === 0) {
+      drawText(ctx,
+        this.isMobile ? 'TAP  FIRE  BUTTON  TO  START' : 'PRESS  SPACE  TO  START',
+        W / 2, H - 88, 12, C.text, 'center'
+      );
+    }
+    drawText(ctx, '← →  MOVE       SPACE / Z  FIRE', W / 2, H - 64, 9, C.textDim, 'center', false);
+  }
+
+  _renderGameOver(ctx) {
+    // Dim overlay
+    ctx.fillStyle   = 'rgba(0,0,0,0.62)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.shadowColor = '#ff2222';
+    ctx.shadowBlur  = 30;
+    drawText(ctx, 'GAME  OVER', W / 2, 190, 38, '#ff2222', 'center', false);
+    ctx.shadowBlur  = 0;
+
+    drawText(ctx, `SCORE  ${pad(this.score, 5)}`, W / 2, 258, 19, C.text, 'center');
+
+    const newBest = this.score >= this.highScore && this.score > 0;
+    if (newBest && Math.floor(Date.now() / 420) % 2 === 0) {
+      drawText(ctx, '✦  NEW  HIGH  SCORE  ✦', W / 2, 295, 14, '#ffff44', 'center');
+    } else if (!newBest) {
+      drawText(ctx, `BEST  ${pad(this.highScore, 5)}`, W / 2, 295, 13, C.textDim, 'center', false);
+    }
+
+    if (Math.floor(Date.now() / 620) % 2 === 0) {
+      drawText(ctx,
+        this.isMobile ? 'TAP  FIRE  TO  PLAY  AGAIN' : 'SPACE  TO  PLAY  AGAIN',
+        W / 2, 368, 12, C.text, 'center'
+      );
+    }
+  }
+
+  _renderLevelClear(ctx) {
+    this.particles.forEach(p => p.draw(ctx));
+
+    const t = Math.max(0, 1 - this.clearTimer / 2.2);  // 0 → 1 as timer counts down
+
+    if (Math.floor(Date.now() / 300) % 2 === 0) {
+      ctx.shadowColor = C.text;
+      ctx.shadowBlur  = 18;
+      drawText(ctx, 'LEVEL  CLEAR!', W / 2, H / 2 - 28, 28, C.text, 'center', false);
+      ctx.shadowBlur = 0;
+    }
+    drawText(ctx, `ENTERING  LEVEL  ${this.level + 1}`, W / 2, H / 2 + 14, 14, C.textDim, 'center', false);
+  }
+
+  // ── Responsive resize ───────────────────────────────────────────
+
+  _bindResize() {
+    window.addEventListener('resize', () => this._resize());
+    // Re-check when touch-controls bar appears/collapses
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => this._resize())
+        .observe(document.getElementById('touch-controls'));
+    }
+  }
+
+  _resize() {
+    const tc   = document.getElementById('touch-controls');
+    const tcH  = tc ? tc.offsetHeight : 0;
+    const avW  = window.innerWidth;
+    const avH  = window.innerHeight - tcH;
+
+    // Fit inside available space, maintain logical aspect ratio
+    const scale = Math.min(avW / W, avH / H);
+    const dW    = Math.floor(W * scale);
+    const dH    = Math.floor(H * scale);
+
+    // Canvas always renders at logical resolution; CSS does the display scaling
+    this.canvas.width  = W;
+    this.canvas.height = H;
+    this.canvas.style.width  = `${dW}px`;
+    this.canvas.style.height = `${dH}px`;
+
+    const wrap = document.getElementById('game-wrap');
+    wrap.style.width  = `${dW}px`;
+    wrap.style.height = `${dH}px`;
+  }
+}
+
+// ================================================================
+// SECTION 14 — BOOTSTRAP
+// ================================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+
+  const canvas = document.getElementById('gameCanvas');
+  const game   = new Game(canvas);
+
+  Input.init();
+
+  // ── Edge-triggered Space / Enter key (start + restart, not fire-while-playing)
+  let prevFire = false;
+  function handleFireEdge(active) {
+    if (active && !prevFire) {
+      if (game.state === 'start' || game.state === 'gameover') game.action();
+    }
+    prevFire = active;
+  }
+
+  // ── Canvas tap → start / restart ──────────────────────────────
+  canvas.addEventListener('click', () => game.action());
+  canvas.addEventListener('touchend', e => {
+    e.preventDefault();
+    if (game.state !== 'playing' && game.state !== 'dying' && game.state !== 'levelclear') {
+      game.action();
+    }
+  }, { passive: false });
+
+  // Block pull-to-refresh / context menu
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('touchmove',   e => e.preventDefault(), { passive: false });
+
+  // ── Main render/update loop ────────────────────────────────────
+  let lastTs = 0;
+
+  function loop(ts) {
+    // Cap dt to 50 ms to avoid spiral-of-death after tab focus restore
+    const dt = Math.min((ts - lastTs) / 1000, 0.05);
+    lastTs   = ts;
+
+    handleFireEdge(Input.isFire());
+
+    game.update(dt);
+    game.render();
+
+    requestAnimationFrame(loop);
+  }
+
+  // Seed lastTs on first frame before entering loop
+  requestAnimationFrame(ts => {
+    lastTs = ts;
+    requestAnimationFrame(loop);
+  });
+});
+</script>
+</body>
+</html>
